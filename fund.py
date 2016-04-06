@@ -13,6 +13,31 @@ class bcolors:
     BOLD = '\033[1m'
     UNDERLINE = '\033[4m'
 
+def createTable():
+    global cursor
+    cursor.execute('''CREATE TABLE if not exists stocks
+                   (code char(6) PRIMARY KEY     NOT NULL,
+                   name           TEXT    NOT NULL,
+                   hold            INT     NOT NULL
+                   );''')
+    cursor.execute('''CREATE TABLE if not exists stock_daily
+                   (
+                   code char(6) not null,
+                   date int not null,
+                   dwjz real not null,
+                   ljjz real not null,
+                   rzzl real not null,
+                   unique (code, date)
+                   );''')
+    cursor.execute('''CREATE TABLE if not exists stock_valuation
+                   (
+                   code char(6) not null,
+                   date int not null,
+                   gsz real not null,
+                   gszzl real not null,
+                   unique (code, date)
+                   );''')
+
 def getDailyData(fund_code, days):
     curtime = str(time.time()) + '353';
     httpClient = None
@@ -64,55 +89,50 @@ def getValuation(fund_code):
         if httpClient:
             httpClient.close
 
+def initFundList(file_name):
+    global cursor
+    fund_list = []
+    file = open(file_name)
+    tmplist = file.readlines()
+    for line in tmplist:
+        fund_list.append(line.strip())
+    # 获取stock名称
+    for i in fund_list:
+        cursor.execute('select count(*) from stocks where code=?', (i,))
+        row = cursor.fetchone()
+        if row[0] > 0:
+            continue
+        name = getName(i)
+        cursor.execute('insert into stocks values(?,?,?)', (i, name, 0))
+
+def getFundList():
+    global cursor
+    # （重新）从DB获取数据，方便扩展
+    fund_list = []
+    cursor.execute('select code from stocks')
+    for row in cursor:
+        fund_list.append(row['code'])
+    return fund_list
+
 # 连接数据库
 conn = sqlite3.connect('db')
 conn.row_factory = sqlite3.Row
 cursor = conn.cursor()
+print "connect db end"
 
-#创建所需数据表（如果不存在的话）
-cursor.execute('''CREATE TABLE if not exists stocks
-             (code char(6) PRIMARY KEY     NOT NULL,
-             name           TEXT    NOT NULL,
-             hold            INT     NOT NULL
-);''')
-cursor.execute('''CREATE TABLE if not exists stock_daily
-             (
-             code char(6) not null,
-             date int not null,
-             dwjz real not null,
-             ljjz real not null,
-             rzzl real not null,
-             unique (code, date)
-);''')
-cursor.execute('''CREATE TABLE if not exists stock_valuation
-             (
-             code char(6) not null,
-             date int not null,
-             gsz real not null,
-             gszzl real not null,
-             unique (code, date)
-);''')
+# 创建所需数据表（如果不存在的话）
+createTable()
 conn.commit()
+print "create table end"
 
-# 获取stock列表
-fund_list = []
-file = open("list")
-tmplist = file.readlines()
-for line in tmplist:
-    fund_list.append(line.strip())
-
-# 获取stock名称
-for i in fund_list:
-    cursor.execute('select count(*) from stocks where code=?', (i,))
-    row = cursor.fetchone()
-    if row[0] > 0:
-        continue
-    name = getName(i)
-    cursor.execute('insert into stocks values(?,?,?)', (i, name, 0))
+# 从配置文件获取stock列表
+initFundList("list")
 conn.commit()
 print "get name end"
 
-#获取stock每日数据
+fund_list = getFundList()
+
+# 获取stock每日数据
 for i in fund_list:
     yesterday = datetime.date.today() - datetime.timedelta(days=1)
     while yesterday.isoweekday() >= 6:
@@ -129,7 +149,7 @@ for i in fund_list:
 conn.commit()
 print "get daily data end"
 
-#获取stock估值
+# 获取stock估值
 for i in fund_list:
     v= getValuation(i)
     v = json.loads(v)
@@ -139,20 +159,36 @@ for i in fund_list:
 conn.commit()
 print "get valuation end"
 
-#按照累计两天高抛低吸策略给出建议
+# 按照累计两天高抛低吸策略给出建议
 for i in fund_list:
     cursor.execute('select date,rzzl from stock_daily where code=? order by date desc limit 1', (i,))
     row = cursor.fetchone()
     if row['rzzl'] > 0:
         continue
     date_1 = datetime.date.fromtimestamp(row['date']).strftime('%Y-%m-%d')
-    zzl_1 = str(row['rzzl']) + "%"
+    zzl_1 = str(round(row['rzzl'], 2)) + "%"
     cursor.execute('select date,gszzl from stock_valuation where code=? order by date desc limit 1', (i,))
     row = cursor.fetchone()
     if row['gszzl'] > 0:
         continue
     date_2 = datetime.date.fromtimestamp(row['date']).strftime('%Y-%m-%d')
-    zzl_2 = str(row['gszzl']) + "%"
-    print bcolors.GREEN + i + "\t" + getName(i).ljust(20) + "\t" + date_1 + " " + zzl_1 + "\t" + date_2 + " " + zzl_2 + bcolors.ENDC
+    zzl_2 = str(round(row['gszzl'], 2)) + "%"
+    print bcolors.RED + i + "\t" + getName(i).ljust(20) + "\t" + date_1 + "," + zzl_1 + "\t" + date_2 + "," + zzl_2 + bcolors.ENDC
+
+# 模拟历史收益
+for i in fund_list:
+    cursor.execute('select date,rzzl from stock_daily where code=? order by date desc limit 1', (i,))
+    row = cursor.fetchone()
+    if row['rzzl'] > 0:
+        continue
+    date_1 = datetime.date.fromtimestamp(row['date']).strftime('%Y-%m-%d')
+    zzl_1 = str(round(row['rzzl'], 2)) + "%"
+    cursor.execute('select date,gszzl from stock_valuation where code=? order by date desc limit 1', (i,))
+    row = cursor.fetchone()
+    if row['gszzl'] > 0:
+        continue
+    date_2 = datetime.date.fromtimestamp(row['date']).strftime('%Y-%m-%d')
+    zzl_2 = str(round(row['gszzl'], 2)) + "%"
+    print bcolors.RED + i + "\t" + getName(i).ljust(20) + "\t" + date_1 + "," + zzl_1 + "\t" + date_2 + "," + zzl_2 + bcolors.ENDC
 
 conn.close()
