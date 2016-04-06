@@ -3,6 +3,7 @@ import sys
 import httplib
 import json
 import time
+import datetime
 import sqlite3
 
 class bcolors:
@@ -21,8 +22,6 @@ def getDailyData(fund_code, days):
         httpClient.request('GET', '/trade/fund/jzlist?fund_code=' + fund_code + '&cur_page=1&page_size=' + str(days) + '&_=' + curtime)
 
         response = httpClient.getresponse()
-        #    print response.status
-        #    print response.reason
         jijin_json = json.loads(response.read())
         data = jijin_json['data']['list']
         data = sorted(data, key = lambda x:x['date'])
@@ -40,7 +39,7 @@ def getName(fund_code):
         response = httpClient.getresponse()
         fund_str=response.read().decode(encoding='GBK')
         index_begin=fund_str.index('[')
-        index_end=fund_str.index(']')
+        index_end=fund_str.rindex(']')
         json_data=json.loads(fund_str[index_begin+1:index_end])
         return json_data['name']
     except Exception, e:
@@ -49,13 +48,28 @@ def getName(fund_code):
         if httpClient:
             httpClient.close
 
+def getValuation(fund_code):
+    try:
+        httpClient = httplib.HTTPConnection('fundexh5.eastmoney.com', 80, timeout=10)
+        httpClient.request('GET', '/fundwapapi/FundBase.ashx?callback=jsonp1&FCODE=' + fund_code)
+        response = httpClient.getresponse()
+        fund_str=response.read().decode(encoding='utf-8')
+        index_begin=fund_str.index('(')
+        index_end=fund_str.rindex(')')
+        json_data=json.loads(fund_str[index_begin+1:index_end])
+        return json_data['Datas']['Valuation']
+    except Exception, e:
+        print e
+    finally:
+        if httpClient:
+            httpClient.close
 
-
-# 连接数据库，创建所需数据表（如果不存在的话）
+# 连接数据库
 conn = sqlite3.connect('db')
 conn.row_factory = sqlite3.Row
 cursor = conn.cursor()
 
+#创建所需数据表（如果不存在的话）
 cursor.execute('''CREATE TABLE if not exists stocks
              (code char(6) PRIMARY KEY     NOT NULL,
              name           TEXT    NOT NULL,
@@ -68,6 +82,14 @@ cursor.execute('''CREATE TABLE if not exists stock_daily
              dwjz real not null,
              ljjz real not null,
              rzzl real not null,
+             unique (code, date)
+);''')
+cursor.execute('''CREATE TABLE if not exists stock_valuation
+             (
+             code char(6) not null,
+             date int not null,
+             gsz real not null,
+             gszzl real not null,
              unique (code, date)
 );''')
 conn.commit()
@@ -84,27 +106,38 @@ for i in fund_list:
     cursor.execute('select count(*) from stocks where code=?', (i,))
     row = cursor.fetchone()
     if row[0] > 0:
-        print 'continue'
         continue
     name = getName(i)
     cursor.execute('insert into stocks values(?,?,?)', (i, name, 0))
-    print "get name: " + i
 conn.commit()
+print "get name end"
 
 #获取stock每日数据
 for i in fund_list:
-    cursor.execute('select count(*) from stock_daily where code=?', (i,))
+    yesterday = datetime.date.today() - datetime.timedelta(days=1)
+    while yesterday.isoweekday() >= 6:
+        yesterday = yesterday - datetime.timedelta(days=1)
+    cursor.execute('select count(*) from stock_daily where code=? and date=?', (i,yesterday.strftime("%s")))
     row = cursor.fetchone()
-    if row[0] > 0:
-        days = 6
-    else:
+    if row[0] == 0:
         days = 1000
-    daily_data = getDailyData(i, days)
-    for d in daily_data:
-        cursor.execute('insert into stock_daily(code,date,dwjz,ljjz,rzzl) values(?,?,?,?,?)', 
-                   (i, d['date'], d['dwjz'], d['ljjz'], d['rzzl']))
-    print "get daily data: " + i
+        daily_data = getDailyData(i, days)
+        for d in daily_data:
+            d_date = datetime.datetime.strptime(d['date'], '%Y-%m-%d').strftime("%s")
+            cursor.execute('replace into stock_daily(code,date,dwjz,ljjz,rzzl) values(?,?,?,?,?)', 
+                           (i, d_date, d['dwjz'], d['ljjz'], d['rzzl']))
 conn.commit()
+print "get daily data end"
+
+#获取stock估值
+for i in fund_list:
+    v= getValuation(i)
+    v = json.loads(v)
+    v_date = datetime.datetime.strptime(v['gztime'], '%Y-%m-%d %H:%M').strftime("%s")
+    cursor.execute('replace into stock_valuation(code,date,gsz,gszzl) values(?,?,?,?)', 
+                   (i, v_date, v['gsz'], v['gszzl']))
+conn.commit()
+print "get valuation end"
 
 conn.close()
 sys.exit('good bye')
