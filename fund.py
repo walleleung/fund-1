@@ -139,20 +139,20 @@ for i in fund_list:
 conn.commit()
 print "get valuation end"
 
+#按照累计两天高抛低吸策略给出建议
+for i in fund_list:
+    cursor.execute('select date,rzzl from stock_daily where code=? order by date desc limit 1', (i,))
+    row = cursor.fetchone()
+    if row['rzzl'] > 0:
+        continue
+    date_1 = datetime.date.fromtimestamp(row['date']).strftime('%Y-%m-%d')
+    zzl_1 = str(row['rzzl']) + "%"
+    cursor.execute('select date,gszzl from stock_valuation where code=? order by date desc limit 1', (i,))
+    row = cursor.fetchone()
+    if row['gszzl'] > 0:
+        continue
+    date_2 = datetime.date.fromtimestamp(row['date']).strftime('%Y-%m-%d')
+    zzl_2 = str(row['gszzl']) + "%"
+    print bcolors.GREEN + i + "\t" + getName(i).ljust(20) + "\t" + date_1 + " " + zzl_1 + "\t" + date_2 + " " + zzl_2 + bcolors.ENDC
+
 conn.close()
-sys.exit('good bye')
-
-
-days = raw_input("请输入工作日天数：")
-ret_list=[]
-for fund_code in fund_list:
-    fund_code = fund_code.strip()
-    ret_list.append(getFundData(fund_code, days))
-
-ret_list = sorted(ret_list, key = lambda x:x['money'])
-for ret in ret_list:
-    name = ret['name'] + "[" + ret['code'] + "]"
-    if ret['money'] > 10000:
-        print bcolors.RED + ret['date'] + "\t" + name.ljust(20) + "\t" + str(round(ret['money'],2)).rjust(8) + "\t profit:" + str(ret['profit']) + "\t loss:" + str(ret['loss']) + bcolors.ENDC
-    else:
-        print bcolors.GREEN + ret['date'] + "\t" + name.ljust(20) + "\t" + str(round(ret['money'],2)).rjust(8) + "\t profit:" + str(ret['profit']) + "\t loss:" + str(ret['loss']) + bcolors.ENDC
