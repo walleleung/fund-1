@@ -142,9 +142,10 @@ for i in fund_list:
     if row[0] == 0:
         days = 1000
         daily_data = getDailyData(i, days)
+        print i
         for d in daily_data:
             d_date = datetime.datetime.strptime(d['date'], '%Y-%m-%d').strftime("%s")
-            cursor.execute('replace into stock_daily(code,date,dwjz,ljjz,rzzl) values(?,?,?,?,?)', 
+            cursor.execute('replace into stock_daily(code,date,dwjz,ljjz,rzzl) values(?,?,?,?,?)',
                            (i, d_date, d['dwjz'], d['ljjz'], d['rzzl']))
 conn.commit()
 print "get daily data end"
@@ -154,41 +155,66 @@ for i in fund_list:
     v= getValuation(i)
     v = json.loads(v)
     v_date = datetime.datetime.strptime(v['gztime'], '%Y-%m-%d %H:%M').strftime("%s")
-    cursor.execute('replace into stock_valuation(code,date,gsz,gszzl) values(?,?,?,?)', 
+    cursor.execute('replace into stock_valuation(code,date,gsz,gszzl) values(?,?,?,?)',
                    (i, v_date, v['gsz'], v['gszzl']))
 conn.commit()
 print "get valuation end"
 
 # 按照累计两天高抛低吸策略给出建议
 for i in fund_list:
+    zzl = 1
     cursor.execute('select date,rzzl from stock_daily where code=? order by date desc limit 1', (i,))
     row = cursor.fetchone()
     if row['rzzl'] > 0:
         continue
+    zzl = zzl * (1+row['rzzl']/100)
     date_1 = datetime.date.fromtimestamp(row['date']).strftime('%Y-%m-%d')
     zzl_1 = str(round(row['rzzl'], 2)) + "%"
     cursor.execute('select date,gszzl from stock_valuation where code=? order by date desc limit 1', (i,))
     row = cursor.fetchone()
     if row['gszzl'] > 0:
         continue
+    zzl = zzl * (1+row['gszzl']/100)
     date_2 = datetime.date.fromtimestamp(row['date']).strftime('%Y-%m-%d')
+    if date_1 == date_2:
+        continue
+    if zzl > 0.98:
+        continue
     zzl_2 = str(round(row['gszzl'], 2)) + "%"
     print bcolors.RED + i + "\t" + getName(i).ljust(20) + "\t" + date_1 + "," + zzl_1 + "\t" + date_2 + "," + zzl_2 + bcolors.ENDC
 
 # 模拟历史收益
+test_days = 30
 for i in fund_list:
-    cursor.execute('select date,rzzl from stock_daily where code=? order by date desc limit 1', (i,))
-    row = cursor.fetchone()
-    if row['rzzl'] > 0:
-        continue
-    date_1 = datetime.date.fromtimestamp(row['date']).strftime('%Y-%m-%d')
-    zzl_1 = str(round(row['rzzl'], 2)) + "%"
-    cursor.execute('select date,gszzl from stock_valuation where code=? order by date desc limit 1', (i,))
-    row = cursor.fetchone()
-    if row['gszzl'] > 0:
-        continue
-    date_2 = datetime.date.fromtimestamp(row['date']).strftime('%Y-%m-%d')
-    zzl_2 = str(round(row['gszzl'], 2)) + "%"
-    print bcolors.RED + i + "\t" + getName(i).ljust(20) + "\t" + date_1 + "," + zzl_1 + "\t" + date_2 + "," + zzl_2 + bcolors.ENDC
+    cursor.execute('''select date,rzzl from stock_daily
+                   where code=? and date in
+                   (select date from stock_daily where code=? order by date desc limit ?)
+                   order by date''', (i,i,test_days,))
+    list = cursor.fetchall()
+    buy_days = 0
+    profit = 1
+    for row in list:
+        rzzl = row['rzzl']
+        if rzzl > 0:
+            if buy_days >= 2:
+                buy_days = 0
+                profit = profit * (1+rzzl/100) * 0.995
+            elif buy_days == 1:
+                buy_days = buy_days + 1
+                profit = profit * (1+rzzl/100)
+            else:
+                buy_days = 0
+        else:
+            if buy_days <= -1:
+                buy_days = 1
+                profit = profit * 0.9988
+            elif buy_days == 0:
+                buy_days = buy_days - 1
+            else:
+                profit = profit * (1+rzzl/100)
+    if profit > 1.1:
+        print i + getName(i) + ":" + str(round(profit,2))
+
+
 
 conn.close()
