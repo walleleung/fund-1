@@ -1,12 +1,8 @@
 #!/usr/bin/env python
 #coding=utf-8
-import sys
-import httplib
-import json
-import time
-import datetime
-import sqlite3
+import os,sys,httplib,json,time,datetime,sqlite3
 from optparse import OptionParser
+from multiprocessing import Pool
 
 class bcolors:
     RED = '\033[0;37;41m'
@@ -19,8 +15,35 @@ class bcolors:
     BOLD = '\033[1m'
     UNDERLINE = '\033[4m'
 
+def unix_timestamp(timestr, format):
+    return datetime.datetime.strptime(timestr, format).strftime("%s")
+
+def formatYmd(unixtime):
+    return datetime.date.fromtimestamp(unixtime).strftime('%Y-%m-%d')
+
+def formatYmdHm(unixtime):
+    return datetime.datetime.fromtimestamp(unixtime).strftime('%Y-%m-%d %H:%M')
+
+def formatPercent(f):
+    return str(round(f, 2)) + '%'
+
+def readConf():
+    file_name = 'list'
+    fundcode_list = []
+    file = open(file_name)
+    tmplist = file.readlines()
+    for tmpline in tmplist:
+        fundcode_list.append(tmpline.strip())
+    return fundcode_list
+
+def getConn():
+    # 连接数据库
+    conn = sqlite3.connect('db')
+    conn.row_factory = sqlite3.Row
+    return conn
+
 def createTable():
-    global cursor
+    cursor = conn.cursor()
     cursor.execute('''CREATE TABLE if not exists stocks
                    (code char(6) PRIMARY KEY     NOT NULL,
                    name           TEXT    NOT NULL,
@@ -43,20 +66,36 @@ def createTable():
                    gszzl real not null,
                    unique (code, date)
                    );''')
+    conn.commit()
 
-def getDailyData(fund_code, days):
-    curtime = str(time.time()) + '353';
+def getDailyData(fund_code):
+    # 优先从DB获取数据
+    yesterday = datetime.date.today() - datetime.timedelta(days=1)
+    while yesterday.isoweekday() >= 6:
+        yesterday = yesterday - datetime.timedelta(days=1)
+    cursor = conn.cursor()
+    cursor.execute('select count(*) from stock_daily where code=? and date=?', (fund_code,yesterday.strftime("%s")))
+    row = cursor.fetchone()
+    if row[0] > 0:
+        cursor.execute('select date,rzzl from stock_daily where code=? order by date', (fund_code,))
+        return cursor.fetchall()
+
+    curtime = str(time.time()) + '666';
     httpClient = None
-
     try:
         httpClient = httplib.HTTPConnection('caifu.baidu.com', 80, timeout=10)
-        httpClient.request('GET', '/trade/fund/jzlist?fund_code=' + fund_code + '&cur_page=1&page_size=' + str(days) + '&_=' + curtime)
+        httpClient.request('GET', '/trade/fund/jzlist?fund_code=' + fund_code + '&cur_page=1&page_size=1000&_=' + curtime)
 
         response = httpClient.getresponse()
         jijin_json = json.loads(response.read())
         data = jijin_json['data']['list']
-        data = sorted(data, key = lambda x:x['date'])
-        return data
+        for d in data:
+            d_date = unix_timestamp(d['date'], '%Y-%m-%d')
+            cursor.execute('replace into stock_daily(code,date,dwjz,ljjz,rzzl) values(?,?,?,?,?)',
+                           (fund_code, d_date, d['dwjz'], d['ljjz'], d['rzzl']))
+        conn.commit()
+        cursor.execute('select date,rzzl from stock_daily where code=? order by date', (fund_code,))
+        return cursor.fetchall()
     except Exception, e:
         print e
     finally:
@@ -64,6 +103,11 @@ def getDailyData(fund_code, days):
             httpClient.close()
 
 def getName(fund_code):
+    cursor = conn.cursor()
+    cursor.execute('select name from stocks where code=?', (fund_code,))
+    row = cursor.fetchone()
+    if row:
+        return row['name']
     try:
         httpClient = httplib.HTTPConnection('so.hexun.com', 80, timeout=10)
         httpClient.request('GET', '/ajax.do?type=fund&key=' + fund_code)
@@ -72,6 +116,7 @@ def getName(fund_code):
         index_begin=fund_str.index('[')
         index_end=fund_str.rindex(']')
         json_data=json.loads(fund_str[index_begin+1:index_end])
+        print fund_code + ":" + json_data['name']
         return json_data['name']
     except Exception, e:
         print e
@@ -80,6 +125,7 @@ def getName(fund_code):
             httpClient.close
 
 def getValuation(fund_code):
+    cursor = conn.cursor()
     try:
         httpClient = httplib.HTTPConnection('fundexh5.eastmoney.com', 80, timeout=10)
         httpClient.request('GET', '/fundwapapi/FundBase.ashx?callback=jsonp1&FCODE=' + fund_code)
@@ -88,92 +134,71 @@ def getValuation(fund_code):
         index_begin=fund_str.index('(')
         index_end=fund_str.rindex(')')
         json_data=json.loads(fund_str[index_begin+1:index_end])
-        return json_data['Datas']['Valuation']
+        v = json_data['Datas']['Valuation']
+        v = json.loads(v)
+        v_date = unix_timestamp(v['gztime'], '%Y-%m-%d %H:%M')
+        cursor.execute('replace into stock_valuation(code,date,gsz,gszzl) values(?,?,?,?)',
+                       (fund_code, v_date, v['gsz'], v['gszzl']))
+        conn.commit()
+        cursor.execute('select code,date,gszzl from stock_valuation where code=? and date=?', (fund_code, v_date))
+        return cursor.fetchone()
     except Exception, e:
         print e
     finally:
         if httpClient:
             httpClient.close
 
-def initFundList(file_name):
-    global cursor
-    fund_list = []
-    file = open(file_name)
-    tmplist = file.readlines()
-    for line in tmplist:
-        fund_list.append(line.strip())
+def initFundList(mod):
+    cursor = conn.cursor()
     # 获取stock名称
-    for i in fund_list:
+    for i in fundcode_list:
+        if int(i) % mod != 0:
+            continue
         cursor.execute('select count(*) from stocks where code=?', (i,))
         row = cursor.fetchone()
         if row[0] > 0:
             continue
         name = getName(i)
         cursor.execute('insert into stocks values(?,?,?)', (i, name, 0))
-        print i + ":" + name
-
-def getFundList():
-    global cursor
-    # （重新）从DB获取数据，方便扩展
-    fund_list = []
-    cursor.execute('select code from stocks')
-    for row in cursor:
-        fund_list.append(row['code'])
-    return fund_list
-
-def daily():
-    # 获取stock每日数据
-    for i in fund_list:
-        yesterday = datetime.date.today() - datetime.timedelta(days=1)
-        while yesterday.isoweekday() >= 6:
-            yesterday = yesterday - datetime.timedelta(days=1)
-            cursor.execute('select count(*) from stock_daily where code=? and date=?', (i,yesterday.strftime("%s")))
-            row = cursor.fetchone()
-            if row[0] == 0:
-                days = 1000
-                daily_data = getDailyData(i, days)
-                for d in daily_data:
-                    d_date = datetime.datetime.strptime(d['date'], '%Y-%m-%d').strftime("%s")
-                    cursor.execute('replace into stock_daily(code,date,dwjz,ljjz,rzzl) values(?,?,?,?,?)',
-                                   (i, d_date, d['dwjz'], d['ljjz'], d['rzzl']))
-                conn.commit()
-
-def valuation():
-    # 获取stock估值
-    if datetime.datetime.now().hour < 16:
-        for i in fund_list:
-            v= getValuation(i)
-            v = json.loads(v)
-            v_date = datetime.datetime.strptime(v['gztime'], '%Y-%m-%d %H:%M').strftime("%s")
-            cursor.execute('replace into stock_valuation(code,date,gsz,gszzl) values(?,?,?,?)',
-                           (i, v_date, v['gsz'], v['gszzl']))
-            conn.commit()
-            print "get valuation end"
+    conn.commit()
+    # 获取stock历史收益
+    for i in fundcode_list:
+        if int(i) % mod != 0:
+            continue
+        getDailyData(i)
+    conn.commit()
+    # 获取stock最新估值
+    for i in fundcode_list:
+        if int(i) % mod != 0:
+            continue
+        getValuation(i)
+    conn.commit()
 
 def gpdx():
+    cursor = conn.cursor()
     # 按照累计两天高抛低吸策略给出建议
     gpdx_list = []
-    for i in fund_list:
+    for i in fundcode_list:
         zzl = 1
         cursor.execute('select date,rzzl from stock_daily where code=? order by date desc limit 1', (i,))
         row = cursor.fetchone()
         if row['rzzl'] > 0:
             continue
-        zzl = zzl * (1+row['rzzl']/100)
-        date_1 = datetime.date.fromtimestamp(row['date']).strftime('%Y-%m-%d')
-        zzl_1 = str(round(row['rzzl'], 2)) + "%"
+        zzl = zzl * (100+row['rzzl'])/100
+        date_1 = formatYmd(row['date'])
+        zzl_1 = formatPercent(row['rzzl'])
         cursor.execute('select date,gszzl from stock_valuation where code=? order by date desc limit 1', (i,))
         row = cursor.fetchone()
         if row['gszzl'] > 0:
             continue
-        zzl = zzl * (1+row['gszzl']/100)
-        date_2 = datetime.date.fromtimestamp(row['date']).strftime('%Y-%m-%d')
+        zzl = zzl * (100+row['gszzl'])/100
+        date_2 = formatYmd(row['date'])
         if date_1 == date_2:
             continue
-        if zzl > 0.98:
+        if zzl > 98:
             continue
-        zzl = round(1-zzl, 4)
-        zzl_2 = str(round(row['gszzl'], 2)) + "%"
+        zzl = formatPercent(100-zzl)
+        zzl_2 = formatPercent(row['gszzl'])
         row = {
             'code' : i,
             'name' : getName(i),
@@ -187,138 +212,123 @@ def gpdx():
 
     gpdx_list = sorted(gpdx_list, key = lambda x:x['zzl'])
     for r in gpdx_list:
-        print bcolors.GREEN + r['code'] + "\t" + r['name'].ljust(20) + "\t" + "-" + str(r['zzl']*100) + "%" + "\t" + r['date_1'] + "," + r['zzl_1'] + "\t" + r['date_2'] + "," + r['zzl_2'] + bcolors.ENDC
+        print bcolors.GREEN + r['code'] + "\t" + r['name'].ljust(20) + "\t" + "-" + r['zzl'] + "\t" + r['date_1'] + "," + r['zzl_1'] + "\t" + r['date_2'] + "," + r['zzl_2'] + bcolors.ENDC
     print "get gpdx end"
 
 # 模拟历史收益
 def lssy(i, test_days):
-    global cursor
+    cursor = conn.cursor()
     cursor.execute('''select date,rzzl from stock_daily
                    where code=? and date in
                    (select date from stock_daily where code=? order by date desc limit ?)
                    order by date''', (i,i,test_days,))
     list = cursor.fetchall()
     buy_days = 0
-    profit = 1
+    profit = 100
+    hold_profit = 100
     for row in list:
         rzzl = row['rzzl']
+        hold_profit = hold_profit * (100+rzzl)/100
         if rzzl > 0:
             if buy_days >= 2:
                 buy_days = 0
-                profit = profit * (1+rzzl/100) * 0.995
-                print i + " sell:" + datetime.date.fromtimestamp(row['date']).strftime('%Y-%m-%d') + " " + str(row['rzzl']) + " " + str(round((profit-1)*100, 2)) + "%"
+                profit = profit * (100+rzzl)/100 * 0.995
+                print i + " sell:" + formatYmd(row['date']) + " " + formatPercent(row['rzzl']) + " " + formatPercent(profit-100)
             elif buy_days == 1:
                 buy_days = buy_days + 1
-                profit = profit * (1+rzzl/100)
-                print i + " hold:" + datetime.date.fromtimestamp(row['date']).strftime('%Y-%m-%d') + " " + str(row['rzzl'])
+                profit = profit * (100+rzzl)/100
+                print i + " hold:" + formatYmd(row['date']) + " " + formatPercent(row['rzzl'])
             else:
                 buy_days = 0
         else:
             if buy_days <= -1:
                 buy_days = 1
                 profit = profit * 0.9988
-                print i + " buy:" + datetime.date.fromtimestamp(row['date']).strftime('%Y-%m-%d') + " " + str(row['rzzl'])
+                print i + " buy:" + formatYmd(row['date']) + " " + formatPercent(row['rzzl'])
             elif buy_days == 0:
                 buy_days = buy_days - 1
             else:
-                profit = profit * (1+rzzl/100)
-                print i + " hold:" + datetime.date.fromtimestamp(row['date']).strftime('%Y-%m-%d') + " " + str(row['rzzl'])
+                profit = profit * (100+rzzl)/100
+                print i + " hold:" + formatYmd(row['date']) + " " + formatPercent(row['rzzl'])
+    ret = {
+        'profit' : profit - 100,
+        'hold_profit' : hold_profit - 100
+    }
+    return ret
 
-def test():
+def all_lssy(test_days):
+    cursor = conn.cursor()
     lssy_list = []
-    test_days = 30
-    for i in fund_list:
-        cursor.execute('''select date,rzzl from stock_daily
-                       where code=? and date in
-                       (select date from stock_daily where code=? order by date desc limit ?)
-                       order by date''', (i,i,test_days,))
-        list = cursor.fetchall()
-        buy_days = 0
-        profit = 1
-        hold_profit = 1
-        for row in list:
-            rzzl = row['rzzl']
-            hold_profit = hold_profit * (1+rzzl/100)
-            if rzzl > 0:
-                if buy_days >= 2:
-                    buy_days = 0
-                    profit = profit * (1+rzzl/100) * 0.995
-                elif buy_days == 1:
-                    buy_days = buy_days + 1
-                    profit = profit * (1+rzzl/100)
-                else:
-                    buy_days = 0
-            else:
-                if buy_days <= -1:
-                    buy_days = 1
-                    profit = profit * 0.9988
-                elif buy_days == 0:
-                    buy_days = buy_days - 1
-                else:
-                    profit = profit * (1+rzzl/100)
-        if profit > 1.1:
+    for i in fundcode_list:
+        ret = lssy(i, test_days)
+        if ret['profit'] > 10:
             row = {
                 'code' : i,
                 'name' : getName(i),
-                'profit' : round(profit-1, 4),
-                'hold_profit' : round(hold_profit-1, 4)
+                'profit' : ret['profit'],
+                'hold_profit' : ret['hold_profit']
             }
             lssy_list.append(row)
-
     lssy_list = sorted(lssy_list, key = lambda x:x['profit'])
     for r in lssy_list:
-        lssy(r['code'], test_days)
         print (bcolors.RED + r['code'] + "\t" + r['name'].ljust(20) + "\t" 
-               + str(r['profit']*100) + "% vs " + str(r['hold_profit']*100) + "%" + bcolors.ENDC)
-        print "get lssy end"
+               + formatPercent(r['profit']) + " vs " + formatPercent(r['hold_profit']) + bcolors.ENDC)
+
+def list():
+    p = Pool(10)
+    for i in range(10):
+        p.apply_async(initFundList, args=(i,))
+    p.close()
+    p.join()
+    cursor = conn.cursor()
+    cursor.execute('select code,name from stocks order by code')
+    return cursor.fetchall()
 
 def main():
-    global cursor, fund_list
-    # 连接数据库
-    conn = sqlite3.connect('db')
-    conn.row_factory = sqlite3.Row
-    cursor = conn.cursor()
-    fund_list = getFundList()
+    global fundcode_list, conn
+    # 初始化fundcode列表
+    fundcode_list = readConf()
+    # 创建所需数据表（如果不存在的话）
+    conn = getConn()
+    createTable()
+
     # 选项菜单
     p = OptionParser(description='show me the money',
                               prog='./fund.py',
                               version='fund 0.1',
                               usage='%prog 163113 30')
-    p.add_option('-c', '--createtable', action ='store_true', help='create tables if not exists')
-    p.add_option('-d', '--dailydata', action ='store_true', help='get daily data of the fund')
-    p.add_option('-i', '--initconfig', action ='store_true', help='init config from config file')
-    p.add_option('-n', '--getname', action ='store_true', help='get name for the fund')
+    p.add_option('-d', '--daily', action ='store_true', help='get daily jz/zzl of the fund')
+    p.add_option('-l', '--list', action ='store_true', help='show the fund list')
+    p.add_option('-n', '--name', action ='store_true', help='get name for the fund')
     p.add_option('-s', '--suggest', action ='store_true', help='which fund you can buy today')
     p.add_option('-v', '--valuation', action ='store_true', help='get current valuation of the fund')
     options, arguments = p.parse_args()
     if len(arguments) == 1:
-        if options.getname:
+        if options.name:
             print getName(arguments[0])
-        elif options.dailydata:
-            print getDailyData(arguments[0], 1000)
+        elif options.daily:
+            l = getDailyData(arguments[0])
+            for r in l:
+                print getName(arguments[0]) + "\t" + formatYmd(r['date']) + "\t" + formatPercent(r['rzzl'])
         elif options.valuation:
-            print getValuation(arguments[0])
+            r = getValuation(arguments[0])
+            print getName(arguments[0]) + "\t" + formatYmdHm(r['date']) + "\t" + formatPercent(r['gszzl'])
         else:
             p.print_help()
     elif len(arguments) == 2:
-        lssy(arguments[0], arguments[1])
+        if arguments[0] == 'all':
+            all_lssy(arguments[1])
+        else:
+            lssy(arguments[0], arguments[1])
     else:
-        if options.createtable:
-            # 创建所需数据表（如果不存在的话）
-            createTable()
-            conn.commit()
-            print "create table end"
-        elif options.initconfig:
-            # 从配置文件获取stock列表
-            initFundList("list")
-            conn.commit()
-            print "init fund list end"
+        if options.list:
+            l = list()
+            for row in l:
+                print row['code'] + ":" + row['name']
         elif options.suggest:
             gpdx()
         else:
             p.print_help()
-
-    conn.close()
 
 if __name__ == "__main__":
     main()
