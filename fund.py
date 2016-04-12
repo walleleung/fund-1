@@ -23,7 +23,7 @@ def formatYmd(unixtime):
     return datetime.date.fromtimestamp(unixtime).strftime('%Y-%m-%d')
 
 def formatYmdHm(unixtime):
-    return datetime.datetime.fromtimestamp(unixtime).strftime('%Y-%m-%d %H:%M')
+    return datetime.datetime.fromtimestamp(float(unixtime)).strftime('%Y-%m-%d %H:%M')
 
 def formatPercent(f):
     return str(round(f, 2)) + '%'
@@ -354,7 +354,7 @@ def list():
 def main():
     global fundcode_list
     global THREADS_NUM
-    THREADS_NUM = 10
+    THREADS_NUM = 20
     # 初始化fundcode列表
     fundcode_list = readConf()
     # 创建所需数据表（如果不存在的话）
@@ -370,6 +370,7 @@ def main():
     p.add_option('-n', '--name', action ='store_true', help='get name for the fund')
     p.add_option('-s', '--suggest', action ='store_true', help='which fund you can buy today')
     p.add_option('-v', '--valuation', action ='store_true', help='get current valuation of the fund')
+    p.add_option('-c', '--checkdiff', action ='store_true', help='check if valuation is ok')
     options, arguments = p.parse_args()
     if len(arguments) == 1:
         if options.name:
@@ -380,7 +381,7 @@ def main():
                 print getNameFromDB(arguments[0]) + "\t" + formatYmd(r['date']) + "\t" + formatPercent(r['rzzl'])
         elif options.valuation:
             r = getValuation(arguments[0])
-            print getNameFromDB(arguments[0]) + "\t" + formatYmdHm(r['date']) + "\t" + formatPercent(r['gszzl'])
+            print getNameFromDB(arguments[0]) + "\t" + formatYmdHm(r['date']) + "\t" + formatPercent(float(r['gszzl']))
         else:
             p.print_help()
     elif len(arguments) == 2:
@@ -396,6 +397,8 @@ def main():
         elif options.suggest:
             listFromDB()
             gpdx()
+        elif options.checkdiff:
+            checkdiff()
         else:
             p.print_help()
 
