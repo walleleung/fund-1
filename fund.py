@@ -2,7 +2,8 @@
 #coding=utf-8
 import os,sys,httplib,json,time,datetime,sqlite3
 from optparse import OptionParser
-from multiprocessing import Pool
+import multiprocessing
+from multiprocessing import Pool, Lock
 
 class bcolors:
     RED = '\033[0;37;41m'
@@ -43,6 +44,7 @@ def getConn():
     return conn
 
 def createTable():
+    conn = getConn()
     cursor = conn.cursor()
     cursor.execute('''CREATE TABLE if not exists stocks
                    (code char(6) PRIMARY KEY     NOT NULL,
@@ -66,20 +68,14 @@ def createTable():
                    gszzl real not null,
                    unique (code, date)
                    );''')
-    conn.commit()
+
+def getDailyDataFromDB(fund_code):
+    conn = getConn()
+    cursor = conn.cursor()
+    cursor.execute('select * from stock_daily where code=? order by date', (fund_code,))
+    return cursor.fetchall()
 
 def getDailyData(fund_code):
-    # 优先从DB获取数据
-    yesterday = datetime.date.today() - datetime.timedelta(days=1)
-    while yesterday.isoweekday() >= 6:
-        yesterday = yesterday - datetime.timedelta(days=1)
-    cursor = conn.cursor()
-    cursor.execute('select count(*) from stock_daily where code=? and date=?', (fund_code,yesterday.strftime("%s")))
-    row = cursor.fetchone()
-    if row[0] > 0:
-        cursor.execute('select date,rzzl from stock_daily where code=? order by date', (fund_code,))
-        return cursor.fetchall()
-
     curtime = str(time.time()) + '666';
     httpClient = None
     try:
@@ -89,25 +85,33 @@ def getDailyData(fund_code):
         response = httpClient.getresponse()
         jijin_json = json.loads(response.read())
         data = jijin_json['data']['list']
+        ret = []
         for d in data:
             d_date = unix_timestamp(d['date'], '%Y-%m-%d')
-            cursor.execute('replace into stock_daily(code,date,dwjz,ljjz,rzzl) values(?,?,?,?,?)',
-                           (fund_code, d_date, d['dwjz'], d['ljjz'], d['rzzl']))
-        conn.commit()
-        cursor.execute('select date,rzzl from stock_daily where code=? order by date', (fund_code,))
-        return cursor.fetchall()
+            row = {
+                'code' : fund_code,
+                'date' : d_date,
+                'dwjz' : d['dwjz'],
+                'ljjz' : d['ljjz'],
+                'rzzl' : d['rzzl']
+            }
+            ret.append(row)
+        return ret
     except Exception, e:
         print e
     finally:
         if httpClient:
             httpClient.close()
 
-def getName(fund_code):
+def getNameFromDB(fund_code):
+    conn = getConn()
     cursor = conn.cursor()
     cursor.execute('select name from stocks where code=?', (fund_code,))
     row = cursor.fetchone()
     if row:
         return row['name']
+
+def getName(fund_code):
     try:
         httpClient = httplib.HTTPConnection('so.hexun.com', 80, timeout=10)
         httpClient.request('GET', '/ajax.do?type=fund&key=' + fund_code)
@@ -116,7 +120,6 @@ def getName(fund_code):
         index_begin=fund_str.index('[')
         index_end=fund_str.rindex(']')
         json_data=json.loads(fund_str[index_begin+1:index_end])
-        print fund_code + ":" + json_data['name']
         return json_data['name']
     except Exception, e:
         print e
@@ -125,7 +128,6 @@ def getName(fund_code):
             httpClient.close
 
 def getValuation(fund_code):
-    cursor = conn.cursor()
     try:
         httpClient = httplib.HTTPConnection('fundexh5.eastmoney.com', 80, timeout=10)
         httpClient.request('GET', '/fundwapapi/FundBase.ashx?callback=jsonp1&FCODE=' + fund_code)
@@ -137,49 +139,90 @@ def getValuation(fund_code):
         v = json_data['Datas']['Valuation']
         v = json.loads(v)
         v_date = unix_timestamp(v['gztime'], '%Y-%m-%d %H:%M')
-        cursor.execute('replace into stock_valuation(code,date,gsz,gszzl) values(?,?,?,?)',
-                       (fund_code, v_date, v['gsz'], v['gszzl']))
-        conn.commit()
-        cursor.execute('select code,date,gszzl from stock_valuation where code=? and date=?', (fund_code, v_date))
-        return cursor.fetchone()
+        row = {
+            'code' : fund_code,
+            'date' : v_date,
+            'gsz' : v['gsz'],
+            'gszzl' : v['gszzl'],
+        }
+        return row
     except Exception, e:
         print e
     finally:
         if httpClient:
             httpClient.close
 
+def initFundListFromDB(mod, lock):
+    print multiprocessing.current_process().name + ":initFundListFromDB:start"
+    nameList = []
+    dailyList = []
+    valuationList = []
+    for i in fundcode_list:
+        if int(i) % THREADS_NUM != mod:
+            continue
+
+        lock.acquire()
+
+        # 获取stock名称
+        name = getNameFromDB(i)
+        arr = {
+            'code' : i,
+            'name' : name
+        }
+        nameList.append(arr)
+
+        # 获取stock历史收益
+        dailyList.append(getDailyDataFromDB(i))
+
+        lock.release()
+
+        # 获取stock最新估值
+        valuationList.append(getValuation(i))
+
+    ret = {
+        'name' : nameList,
+        'daily' : dailyList,
+        'valuation' : valuationList
+    }
+    print multiprocessing.current_process().name + ":initFundListFromDB:end"
+    return ret
+
 def initFundList(mod):
-    cursor = conn.cursor()
-    # 获取stock名称
+    nameList = []
+    dailyList = []
+    valuationList = []
     for i in fundcode_list:
-        if int(i) % mod != 0:
+        if int(i) % THREADS_NUM != mod:
             continue
-        cursor.execute('select count(*) from stocks where code=?', (i,))
-        row = cursor.fetchone()
-        if row[0] > 0:
-            continue
+
+        # 获取stock名称
         name = getName(i)
-        cursor.execute('insert into stocks values(?,?,?)', (i, name, 0))
-    conn.commit()
-    # 获取stock历史收益
-    for i in fundcode_list:
-        if int(i) % mod != 0:
-            continue
-        getDailyData(i)
-    conn.commit()
-    # 获取stock最新估值
-    for i in fundcode_list:
-        if int(i) % mod != 0:
-            continue
-        getValuation(i)
-    conn.commit()
+        arr = {
+            'code' : i,
+            'name' : name
+        }
+        nameList.append(arr)
+
+        # 获取stock历史收益
+        dailyList.append(getDailyData(i))
+
+        # 获取stock最新估值
+        valuationList.append(getValuation(i))
+
+    ret = {
+        'name' : nameList,
+        'daily' : dailyList,
+        'valuation' : valuationList
+    }
+    return ret
 
 def gpdx():
+    conn = getConn()
     cursor = conn.cursor()
     # 按照累计两天高抛低吸策略给出建议
     gpdx_list = []
     for i in fundcode_list:
-        zzl = 1
+        zzl = 100
         cursor.execute('select date,rzzl from stock_daily where code=? order by date desc limit 1', (i,))
         row = cursor.fetchone()
         if row['rzzl'] > 0:
@@ -193,11 +236,9 @@ def gpdx():
             continue
         zzl = zzl * (100+row['gszzl'])/100
         date_2 = formatYmd(row['date'])
-        if date_1 == date_2:
-            continue
         if zzl > 98:
             continue
-        zzl = formatPercent(100-zzl)
+        zzl = formatPercent(zzl - 100)
         zzl_2 = formatPercent(row['gszzl'])
         row = {
             'code' : i,
@@ -212,11 +253,11 @@ def gpdx():
 
     gpdx_list = sorted(gpdx_list, key = lambda x:x['zzl'])
     for r in gpdx_list:
-        print bcolors.GREEN + r['code'] + "\t" + r['name'].ljust(20) + "\t" + "-" + r['zzl'] + "\t" + r['date_1'] + "," + r['zzl_1'] + "\t" + r['date_2'] + "," + r['zzl_2'] + bcolors.ENDC
-    print "get gpdx end"
+        print bcolors.GREEN + r['code'] + "\t" + r['name'].ljust(20) + "\t" + r['zzl'] + "\t" + r['date_1'] + "," + r['zzl_1'] + "\t" + r['date_2'] + "," + r['zzl_2'] + bcolors.ENDC
 
 # 模拟历史收益
 def lssy(i, test_days):
+    conn = getConn()
     cursor = conn.cursor()
     cursor.execute('''select date,rzzl from stock_daily
                    where code=? and date in
@@ -257,6 +298,7 @@ def lssy(i, test_days):
     return ret
 
 def all_lssy(test_days):
+    conn = getConn()
     cursor = conn.cursor()
     lssy_list = []
     for i in fundcode_list:
@@ -274,22 +316,48 @@ def all_lssy(test_days):
         print (bcolors.RED + r['code'] + "\t" + r['name'].ljust(20) + "\t" 
                + formatPercent(r['profit']) + " vs " + formatPercent(r['hold_profit']) + bcolors.ENDC)
 
-def list():
-    p = Pool(10)
-    for i in range(10):
-        p.apply_async(initFundList, args=(i,))
+def insertToDB(arr):
+    conn = getConn()
+    cursor = conn.cursor()
+    for n in arr['name']:
+        cursor.execute('replace into stocks values(?,?,?)', (n['code'], n['name'], 0))
+    for ds in arr['daily']:
+        for d in ds:
+            cursor.execute('replace into stock_daily(code,date,dwjz,ljjz,rzzl) values(?,?,?,?,?)',
+                           (d['code'], d['date'], d['dwjz'], d['ljjz'], d['rzzl']))
+    for v in arr['valuation']:
+        cursor.execute('replace into stock_valuation(code,date,gsz,gszzl) values(?,?,?,?)',
+                       (v['code'], v['date'], v['gsz'], v['gszzl']))
+    conn.commit()
+
+def listFromDB():
+    lock = Lock()
+    p = Pool(THREADS_NUM)
+    for i in range(THREADS_NUM):
+        p.apply_async(initFundListFromDB, args = (i,lock))
     p.close()
     p.join()
+
+def list():
+    p = Pool(THREADS_NUM)
+    for i in range(THREADS_NUM):
+        print str(i) + ":" + multiprocessing.current_process().name
+        p.apply_async(initFundList, args = (i,), callback = insertToDB)
+    p.close()
+    p.join()
+
+    conn = getConn()
     cursor = conn.cursor()
     cursor.execute('select code,name from stocks order by code')
     return cursor.fetchall()
 
 def main():
-    global fundcode_list, conn
+    global fundcode_list
+    global THREADS_NUM
+    THREADS_NUM = 10
     # 初始化fundcode列表
     fundcode_list = readConf()
     # 创建所需数据表（如果不存在的话）
-    conn = getConn()
     createTable()
 
     # 选项菜单
@@ -305,14 +373,14 @@ def main():
     options, arguments = p.parse_args()
     if len(arguments) == 1:
         if options.name:
-            print getName(arguments[0])
+            print getNameFromDB(arguments[0])
         elif options.daily:
-            l = getDailyData(arguments[0])
+            l = getDailyDataFromDB(arguments[0])
             for r in l:
-                print getName(arguments[0]) + "\t" + formatYmd(r['date']) + "\t" + formatPercent(r['rzzl'])
+                print getNameFromDB(arguments[0]) + "\t" + formatYmd(r['date']) + "\t" + formatPercent(r['rzzl'])
         elif options.valuation:
             r = getValuation(arguments[0])
-            print getName(arguments[0]) + "\t" + formatYmdHm(r['date']) + "\t" + formatPercent(r['gszzl'])
+            print getNameFromDB(arguments[0]) + "\t" + formatYmdHm(r['date']) + "\t" + formatPercent(r['gszzl'])
         else:
             p.print_help()
     elif len(arguments) == 2:
@@ -326,6 +394,7 @@ def main():
             for row in l:
                 print row['code'] + ":" + row['name']
         elif options.suggest:
+            listFromDB()
             gpdx()
         else:
             p.print_help()
