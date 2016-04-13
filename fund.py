@@ -20,7 +20,7 @@ def unix_timestamp(timestr, format):
     return datetime.datetime.strptime(timestr, format).strftime("%s")
 
 def formatYmd(unixtime):
-    return datetime.date.fromtimestamp(unixtime).strftime('%Y-%m-%d')
+    return datetime.date.fromtimestamp(float(unixtime)).strftime('%Y-%m-%d')
 
 def formatYmdHm(unixtime):
     return datetime.datetime.fromtimestamp(float(unixtime)).strftime('%Y-%m-%d %H:%M')
@@ -326,6 +326,7 @@ def insertToDB(arr):
             cursor.execute('replace into stock_daily(code,date,dwjz,ljjz,rzzl) values(?,?,?,?,?)',
                            (d['code'], d['date'], d['dwjz'], d['ljjz'], d['rzzl']))
     for v in arr['valuation']:
+        v['date'] = unix_timestamp(formatYmd(v['date']), '%Y-%m-%d')
         cursor.execute('replace into stock_valuation(code,date,gsz,gszzl) values(?,?,?,?)',
                        (v['code'], v['date'], v['gsz'], v['gszzl']))
     conn.commit()
