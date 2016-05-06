@@ -98,7 +98,7 @@ def getDailyData(fund_code):
             ret.append(row)
         return ret
     except Exception, e:
-        print e
+        print fund_code + e
     finally:
         if httpClient:
             httpClient.close()
@@ -122,7 +122,7 @@ def getName(fund_code):
         json_data=json.loads(fund_str[index_begin+1:index_end])
         return json_data['name']
     except Exception, e:
-        print e
+        print fund_code + e
     finally:
         if httpClient:
             httpClient.close
@@ -147,7 +147,7 @@ def getValuation(fund_code):
         }
         return row
     except Exception, e:
-        print e
+        print fund_code + e
     finally:
         if httpClient:
             httpClient.close
@@ -169,15 +169,20 @@ def initFundListFromDB(mod, lock):
             'code' : i,
             'name' : name
         }
-        nameList.append(arr)
+        if name:
+            nameList.append(arr)
 
         # 获取stock历史收益
-        dailyList.append(getDailyDataFromDB(i))
+        tmpdata = getDailyDataFromDB(i)
+        if tmpdata:
+            dailyList.append(tmpdata)
 
         lock.release()
 
         # 获取stock最新估值
-        valuationList.append(getValuation(i))
+        tmpdata = getValuation(i)
+        if tmpdata:
+            valuationList.append(tmpdata)
 
     ret = {
         'name' : nameList,
@@ -201,13 +206,18 @@ def initFundList(mod):
             'code' : i,
             'name' : name
         }
-        nameList.append(arr)
+        if name:
+            nameList.append(arr)
 
         # 获取stock历史收益
-        dailyList.append(getDailyData(i))
+        tmpdata = getDailyData(i)
+        if tmpdata:
+            dailyList.append(tmpdata)
 
         # 获取stock最新估值
-        valuationList.append(getValuation(i))
+        tmpdata = getValuation(i)
+        if tmpdata:
+            valuationList.append(tmpdata)
 
     ret = {
         'name' : nameList,
@@ -232,6 +242,8 @@ def gpdx():
         zzl_1 = formatPercent(row['rzzl'])
         cursor.execute('select date,gszzl from stock_valuation where code=? order by date desc limit 1', (i,))
         row = cursor.fetchone()
+        if not row:
+            continue
         if row['gszzl'] > 0:
             continue
         zzl = zzl * (100+row['gszzl'])/100
