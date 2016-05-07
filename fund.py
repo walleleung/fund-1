@@ -120,7 +120,10 @@ def getName(fund_code):
         index_begin=fund_str.index('[')
         index_end=fund_str.rindex(']')
         json_data=json.loads(fund_str[index_begin+1:index_end])
-        return json_data['name']
+        if json_data['name']:
+            return json_data['name']
+        else:
+            return getName(fund_code)
     except Exception, e:
         print fund_code + e
     finally:
@@ -331,7 +334,6 @@ def all_lssy(test_days):
         lssy_list.append(ret)
     lssy_list = sorted(lssy_list, key = lambda x:x['profit'])
     for r in lssy_list:
-        print r['code']
         if r['profit'] > 0:
             print (bcolors.RED + r['code'] + "\t" + r['name'].ljust(20) + "\t" 
                    + formatPercent(r['profit']) + " vs " + formatPercent(r['hold_profit']) + bcolors.ENDC)
@@ -366,7 +368,6 @@ def listFromDB():
 def list():
     p = Pool(THREADS_NUM)
     for i in range(THREADS_NUM):
-        print str(i) + ":" + multiprocessing.current_process().name
         p.apply_async(initFundList, args = (i,), callback = insertToDB)
     p.close()
     p.join()
@@ -399,7 +400,7 @@ def main():
     options, arguments = p.parse_args()
     if len(arguments) == 1:
         if options.name:
-            print getName(arguments[0])
+            print getNameFromDB(arguments[0])
         elif options.daily:
             l = getDailyDataFromDB(arguments[0])
             for r in l:
