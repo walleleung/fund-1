@@ -263,7 +263,7 @@ def gpdx():
 
         row = {
             'code' : i,
-            'name' : getName(i),
+            'name' : getNameFromDB(i),
             'date_1' : date_1,
             'zzl_1' : zzl_1,
             'date_2' : date_2,
@@ -288,6 +288,7 @@ def lssy(i, test_days):
     buy_days = 0
     profit = 100
     hold_profit = 100
+    buy_log = ""
     for row in list:
         rzzl = row['rzzl']
         hold_profit = hold_profit * (100+rzzl)/100
@@ -295,26 +296,29 @@ def lssy(i, test_days):
             if buy_days >= 2:
                 buy_days = 0
                 profit = profit * (100+rzzl)/100 * 0.995
-                print i + " sell:" + formatYmd(row['date']) + " " + formatPercent(row['rzzl']) + " " + formatPercent(profit-100)
+                buy_log = buy_log + i + " sell:" + formatYmd(row['date']) + " " + formatPercent(row['rzzl']) + " " + formatPercent(profit-100) + "\n"
             elif buy_days == 1:
                 buy_days = buy_days + 1
                 profit = profit * (100+rzzl)/100
-                print i + " hold:" + formatYmd(row['date']) + " " + formatPercent(row['rzzl'])
+                buy_log = buy_log + i + " hold:" + formatYmd(row['date']) + " " + formatPercent(row['rzzl']) + "\n"
             else:
                 buy_days = 0
         else:
             if buy_days <= -1:
                 buy_days = 1
                 profit = profit * 0.9988
-                print i + " buy:" + formatYmd(row['date']) + " " + formatPercent(row['rzzl'])
+                buy_log = buy_log + i + " buy:" + formatYmd(row['date']) + " " + formatPercent(row['rzzl']) + "\n"
             elif buy_days == 0:
                 buy_days = buy_days - 1
             else:
                 profit = profit * (100+rzzl)/100
-                print i + " hold:" + formatYmd(row['date']) + " " + formatPercent(row['rzzl'])
+                buy_log = buy_log + i + " hold:" + formatYmd(row['date']) + " " + formatPercent(row['rzzl']) + "\n"
     ret = {
+        'code' : i,
+        'name' : getNameFromDB(i),
         'profit' : profit - 100,
-        'hold_profit' : hold_profit - 100
+        'hold_profit' : hold_profit - 100,
+        'buy_log' : buy_log
     }
     return ret
 
@@ -324,18 +328,17 @@ def all_lssy(test_days):
     lssy_list = []
     for i in fundcode_list:
         ret = lssy(i, test_days)
-        if ret['profit'] > 10:
-            row = {
-                'code' : i,
-                'name' : getName(i),
-                'profit' : ret['profit'],
-                'hold_profit' : ret['hold_profit']
-            }
-            lssy_list.append(row)
+        lssy_list.append(ret)
     lssy_list = sorted(lssy_list, key = lambda x:x['profit'])
     for r in lssy_list:
-        print (bcolors.RED + r['code'] + "\t" + r['name'].ljust(20) + "\t" 
-               + formatPercent(r['profit']) + " vs " + formatPercent(r['hold_profit']) + bcolors.ENDC)
+        print r['code']
+        if r['profit'] > 0:
+            print (bcolors.RED + r['code'] + "\t" + r['name'].ljust(20) + "\t" 
+                   + formatPercent(r['profit']) + " vs " + formatPercent(r['hold_profit']) + bcolors.ENDC)
+        else:
+            print (bcolors.GREEN + r['code'] + "\t" + r['name'].ljust(20) + "\t" 
+                   + formatPercent(r['profit']) + " vs " + formatPercent(r['hold_profit']) + bcolors.ENDC)
+
 
 def insertToDB(arr):
     conn = getConn()
@@ -396,7 +399,7 @@ def main():
     options, arguments = p.parse_args()
     if len(arguments) == 1:
         if options.name:
-            print getNameFromDB(arguments[0])
+            print getName(arguments[0])
         elif options.daily:
             l = getDailyDataFromDB(arguments[0])
             for r in l:
@@ -410,7 +413,10 @@ def main():
         if arguments[0] == 'all':
             all_lssy(arguments[1])
         else:
-            lssy(arguments[0], arguments[1])
+            r = lssy(arguments[0], arguments[1])
+            print r['buy_log']
+            print (bcolors.RED + r['code'] + "\t" + r['name'].ljust(20) + "\t" 
+                   + formatPercent(r['profit']) + " vs " + formatPercent(r['hold_profit']) + bcolors.ENDC)
     else:
         if options.list:
             l = list()
