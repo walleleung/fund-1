@@ -233,25 +233,34 @@ def gpdx():
     gpdx_list = []
     for i in fundcode_list:
         zzl = 100
-        cursor.execute('select date,rzzl from stock_daily where code=? order by date desc limit 1', (i,))
-        row = cursor.fetchone()
-        if row['rzzl'] > 0:
-            continue
-        zzl = zzl * (100+row['rzzl'])/100
-        date_1 = formatYmd(row['date'])
-        zzl_1 = formatPercent(row['rzzl'])
+        # 查询最新两天实际净值
+        cursor.execute('select date,rzzl from stock_daily where code=? order by date desc limit 2', (i,))
+        list_daily = cursor.fetchall()
+        # 查询最新估值
         cursor.execute('select date,rzzl from stock_valuation where code=? order by date desc limit 1', (i,))
-        row = cursor.fetchone()
-        if not row:
+        row_valuation = cursor.fetchone()
+        if not row_valuation:
             continue
-        if row['rzzl'] > 0:
+        # 判断最新净值是否已出
+        if list_daily[1]['date'] == row_valuation['date']:
+            row_1 = list_daily[2]
+            row_2 = list_daily[1]
+        else:
+            row_1 = list_daily[1]
+            row_2 = row_valuation
+        # 只要有一天涨，则不考虑
+        if row_1['rzzl'] > 0 or row_2['rzzl'] > 0:
             continue
-        zzl = zzl * (100+row['rzzl'])/100
-        date_2 = formatYmd(row['date'])
+        # 计算及存储中间结果
+        zzl = zzl * (100+row_1['rzzl'])/100 * (100+row_2['rzzl'])/100
         if zzl > 98:
             continue
         zzl = formatPercent(zzl - 100)
-        zzl_2 = formatPercent(row['rzzl'])
+        date_1 = formatYmd(row_1['date'])
+        zzl_1 = formatPercent(row_1['rzzl'])
+        date_2 = formatYmd(row_2['date'])
+        zzl_2 = formatPercent(row_2['rzzl'])
+
         row = {
             'code' : i,
             'name' : getName(i),
