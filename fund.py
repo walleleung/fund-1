@@ -64,8 +64,8 @@ def createTable():
                    (
                    code char(6) not null,
                    date int not null,
-                   gsz real not null,
-                   gszzl real not null,
+                   dwjz real not null,
+                   rzzl real not null,
                    unique (code, date)
                    );''')
 
@@ -142,8 +142,8 @@ def getValuation(fund_code):
         row = {
             'code' : fund_code,
             'date' : v_date,
-            'gsz' : v['gsz'],
-            'gszzl' : v['gszzl'],
+            'dwjz' : v['gsz'],
+            'rzzl' : v['gszzl'],
         }
         return row
     except Exception, e:
@@ -240,18 +240,18 @@ def gpdx():
         zzl = zzl * (100+row['rzzl'])/100
         date_1 = formatYmd(row['date'])
         zzl_1 = formatPercent(row['rzzl'])
-        cursor.execute('select date,gszzl from stock_valuation where code=? order by date desc limit 1', (i,))
+        cursor.execute('select date,rzzl from stock_valuation where code=? order by date desc limit 1', (i,))
         row = cursor.fetchone()
         if not row:
             continue
-        if row['gszzl'] > 0:
+        if row['rzzl'] > 0:
             continue
-        zzl = zzl * (100+row['gszzl'])/100
+        zzl = zzl * (100+row['rzzl'])/100
         date_2 = formatYmd(row['date'])
         if zzl > 98:
             continue
         zzl = formatPercent(zzl - 100)
-        zzl_2 = formatPercent(row['gszzl'])
+        zzl_2 = formatPercent(row['rzzl'])
         row = {
             'code' : i,
             'name' : getName(i),
@@ -339,8 +339,8 @@ def insertToDB(arr):
                            (d['code'], d['date'], d['dwjz'], d['ljjz'], d['rzzl']))
     for v in arr['valuation']:
         v['date'] = unix_timestamp(formatYmd(v['date']), '%Y-%m-%d')
-        cursor.execute('replace into stock_valuation(code,date,gsz,gszzl) values(?,?,?,?)',
-                       (v['code'], v['date'], v['gsz'], v['gszzl']))
+        cursor.execute('replace into stock_valuation(code,date,dwjz,rzzl) values(?,?,?,?)',
+                       (v['code'], v['date'], v['dwjz'], v['rzzl']))
     conn.commit()
 
 def listFromDB():
@@ -394,7 +394,7 @@ def main():
                 print getNameFromDB(arguments[0]) + "\t" + formatYmd(r['date']) + "\t" + formatPercent(r['rzzl'])
         elif options.valuation:
             r = getValuation(arguments[0])
-            print getNameFromDB(arguments[0]) + "\t" + formatYmdHm(r['date']) + "\t" + formatPercent(float(r['gszzl']))
+            print getNameFromDB(arguments[0]) + "\t" + formatYmdHm(r['date']) + "\t" + formatPercent(float(r['rzzl']))
         else:
             p.print_help()
     elif len(arguments) == 2:
