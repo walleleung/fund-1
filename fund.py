@@ -245,11 +245,11 @@ def gpdx():
         if not row_valuation:
             continue
         # 判断最新净值是否已出
-        if list_daily[1]['date'] == row_valuation['date']:
-            row_1 = list_daily[2]
-            row_2 = list_daily[1]
-        else:
+        if list_daily[0]['date'] == row_valuation['date']:
             row_1 = list_daily[1]
+            row_2 = list_daily[0]
+        else:
+            row_1 = list_daily[0]
             row_2 = row_valuation
         # 只要有一天涨，则不考虑
         if row_1['rzzl'] > 0 or row_2['rzzl'] > 0:
